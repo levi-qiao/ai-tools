@@ -78,7 +78,7 @@ Sub RunMatch()
     ruleCount = lastRowMapping - 1
 
     If ruleCount > 0 Then
-        ReDim rules(1 To ruleCount, 1 To 12)
+        ReDim rules(1 To ruleCount, 1 To 11)
 
         Dim j As Long
         For j = 2 To lastRowMapping
@@ -93,7 +93,6 @@ Sub RunMatch()
             rules(j - 1, 9) = wsMapping.Cells(j, 9).Value   '优先级
             rules(j - 1, 10) = Trim(CStr(wsMapping.Cells(j, 10).Value)) '排除关键词
             rules(j - 1, 11) = wsMapping.Cells(j, 11).Value  '备注
-            rules(j - 1, 12) = Trim(CStr(wsMapping.Cells(j, 12).Value)) '负数发票处理
         Next j
 
         ' 按优先级排序
@@ -183,11 +182,11 @@ Sub RunMatch()
         Dim taxCode As String
         Dim goodsName As String
         Dim amount As Double
-        Dim sellerName As String
+        Dim sellerTaxId As String
 
         taxCode = Trim(textData(i, 6))  '税收分类编码（使用Text）
         goodsName = Trim(CStr(rawData(i, 12)))
-        sellerName = Trim(CStr(rawData(i, 6)))
+        sellerTaxId = Trim(textData(i, 4))  '销方税号（第5列，textData第4个）
 
         amount = 0
         If IsNumeric(rawData(i, 20)) Then
@@ -196,7 +195,7 @@ Sub RunMatch()
 
         ' 执行匹配
         Dim matchResult As Variant
-        matchResult = MatchInvoice(taxCode, goodsName, amount, sellerName, rules, ruleCount)
+        matchResult = MatchInvoice(taxCode, goodsName, amount, sellerTaxId, rules, ruleCount)
 
         ' 写入匹配结果（列28-35）
         outputData(outputRow, 28) = matchResult(0)  '匹配税目
@@ -265,25 +264,12 @@ End Sub
 '========================================
 ' 匹配函数：纯逻辑处理
 '========================================
-Function MatchInvoice(taxCode As String, goodsName As String, amount As Double, sellerName As String, rules As Variant, ruleCount As Long) As Variant
+Function MatchInvoice(taxCode As String, goodsName As String, amount As Double, sellerTaxId As String, rules As Variant, ruleCount As Long) As Variant
     Dim result(6) As Variant
     Dim matched As Boolean
     Dim i As Long
 
     matched = False
-
-    ' 特殊判断：个体工商户不征税
-    If InStr(1, sellerName, "个体工商户", vbTextCompare) > 0 Then
-        result(0) = "不征税"
-        result(1) = "0"
-        result(2) = "0"
-        result(3) = "不征税"
-        result(4) = "个体工商户"
-        result(5) = "否"
-        result(6) = ""
-        MatchInvoice = result
-        Exit Function
-    End If
 
     ' 遍历所有规则（已按优先级排序）
     For i = 1 To ruleCount
@@ -342,45 +328,32 @@ Function MatchInvoice(taxCode As String, goodsName As String, amount As Double, 
         result(1) = rules(i, 7)  '税率
         result(4) = rules(i, 1)  '匹配规则
 
-        ' 判断是否排除
+        ' 判断是否个体户（税号92开头）
+        Dim isIndividual As Boolean
+        isIndividual = (Len(sellerTaxId) >= 2 And Left(sellerTaxId, 2) = "92")
+
+        ' 判断是否征税
         Dim isTaxable As String
-        Dim negativeHandling As String
         isTaxable = Trim(CStr(rules(i, 8)))
-        negativeHandling = Trim(CStr(rules(i, 12)))
 
-        ' 优先判断负数发票
-        If amount < 0 Then
-            ' 负数发票：检查"负数发票处理"字段
-            If negativeHandling = "征税" Then
-                ' 负数发票也征税
-                Dim taxRate As Double
-                taxRate = 0
-                If IsNumeric(rules(i, 7)) Then taxRate = CDbl(rules(i, 7))
-
-                result(2) = Abs(amount) * taxRate / 1000  '使用绝对值
-                result(3) = "应税"
-                result(5) = "否"
-                result(6) = ""
-            Else
-                ' 负数发票排除
-                result(2) = 0
-                result(3) = "不征收"
-                result(5) = "是"
-                result(6) = "红字发票"
-            End If
-        ElseIf isTaxable = "不征税" Or isTaxable = "不征收" Then
-            ' 正数发票但规则标记为不征收
+        ' 计算税额（正负数都直接计算）
+        If isTaxable = "不征税" Or isIndividual Then
+            ' 规则标记为不征税 或 个体户
             result(2) = 0
-            result(3) = "不征收"
+            result(3) = "不征税"
             result(5) = "是"
-            result(6) = isTaxable
+            If isIndividual Then
+                result(6) = "个体户"
+            Else
+                result(6) = isTaxable
+            End If
         Else
-            ' 正数发票且征税
-            Dim taxRate2 As Double
-            taxRate2 = 0
-            If IsNumeric(rules(i, 7)) Then taxRate2 = CDbl(rules(i, 7))
+            ' 征税：直接使用原始金额（正负）
+            Dim taxRate As Double
+            taxRate = 0
+            If IsNumeric(rules(i, 7)) Then taxRate = CDbl(rules(i, 7))
 
-            result(2) = amount * taxRate2 / 1000
+            result(2) = amount * taxRate / 1000
             result(3) = "应税"
             result(5) = "否"
             result(6) = ""
@@ -467,8 +440,10 @@ Sub GenerateSummaryConfirmation(wsInvoice As Worksheet, wsSummary As Worksheet)
     Dim i As Long
     Dim summaryRow As Long
     Dim dict As Object
+    Dim wsMapping As Worksheet
 
     Set dict = CreateObject("Scripting.Dictionary")
+    Set wsMapping = ThisWorkbook.Worksheets("税目映射规则")
 
     lastRow = wsInvoice.Cells(wsInvoice.Rows.Count, 1).End(xlUp).Row
 
@@ -476,15 +451,18 @@ Sub GenerateSummaryConfirmation(wsInvoice As Worksheet, wsSummary As Worksheet)
         Dim taxCategory As String
         Dim amount As Double
         Dim isExcluded As String
+        Dim matchedRule As String
 
         taxCategory = Trim(CStr(wsInvoice.Cells(i, 28).Value))
         isExcluded = Trim(CStr(wsInvoice.Cells(i, 33).Value))
+        matchedRule = Trim(CStr(wsInvoice.Cells(i, 32).Value))
         amount = 0
         If IsNumeric(wsInvoice.Cells(i, 20).Value) Then
             amount = CDbl(wsInvoice.Cells(i, 20).Value)
         End If
 
-        If isExcluded <> "否" Then GoTo NextInvoice
+        ' 跳过排除的项目，但未匹配除外（未匹配需要统计）
+        If isExcluded <> "否" And taxCategory <> "未匹配" Then GoTo NextInvoice
 
         Dim isYellow As Boolean, isRed As Boolean
         isRed = (taxCategory = "未匹配")
@@ -492,6 +470,22 @@ Sub GenerateSummaryConfirmation(wsInvoice As Worksheet, wsSummary As Worksheet)
                     InStr(1, taxCategory, "待确认", vbTextCompare) > 0 Or _
                     InStr(1, taxCategory, "需确认", vbTextCompare) > 0)
 
+        ' 检查匹配规则的状态（是否为"待确认"或"征税/待确认"）
+        If matchedRule <> "" And Not isYellow Then
+            Dim ruleRow As Long
+            For ruleRow = 2 To wsMapping.Cells(wsMapping.Rows.Count, 1).End(xlUp).Row
+                If wsMapping.Cells(ruleRow, 1).Value = matchedRule Then
+                    Dim ruleStatus As String
+                    ruleStatus = Trim(CStr(wsMapping.Cells(ruleRow, 8).Value))
+                    If InStr(1, ruleStatus, "待确认", vbTextCompare) > 0 Then
+                        isYellow = True
+                    End If
+                    Exit For
+                End If
+            Next ruleRow
+        End If
+
+        ' 统计未匹配和需要人工处理的项目
         If (isYellow Or isRed) And taxCategory <> "" Then
             If Not dict.Exists(taxCategory) Then
                 dict.Add taxCategory, Array(0, 0)
@@ -557,7 +551,7 @@ Sub SortRulesByPriority(ByRef rules As Variant, ruleCount As Long)
             If IsNumeric(rules(j, 9)) Then priority2 = CLng(rules(j, 9))
 
             If priority1 > priority2 Then
-                For k = 1 To 12
+                For k = 1 To 11
                     temp = rules(i, k)
                     rules(i, k) = rules(j, k)
                     rules(j, k) = temp
