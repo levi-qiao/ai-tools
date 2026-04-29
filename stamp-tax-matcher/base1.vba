@@ -116,7 +116,7 @@ Sub RunMatch()
     For rowIdx = 1 To UBound(rawData, 1)
         For colIdx = 1 To 6
             ' 使用.Text属性读取，保留原始文本
-            textData(rowIdx, colIdx) = wsRaw.Cells(rowIdx + 2, textColumns(colIdx)).Text
+            textData(rowIdx, colIdx) = wsRaw.Cells(rowIdx + 2, textColumns(colIdx)).text
         Next colIdx
     Next rowIdx
 
@@ -590,7 +590,7 @@ Sub CheckTaxCodeFormat(wsRaw As Worksheet)
 
             If Not IsEmpty(wsRaw.Cells(i, col).Value) Then
                 Dim cellText As String
-                cellText = CStr(wsRaw.Cells(i, col).Text)
+                cellText = CStr(wsRaw.Cells(i, col).text)
 
                 If InStr(cellText, "E+") > 0 Or InStr(cellText, "e+") > 0 Then
                     hasError = True
@@ -609,7 +609,7 @@ Sub CheckTaxCodeFormat(wsRaw As Worksheet)
 
     If hasError Then
         Dim msg As String
-        msg = "⚠️ 发现长数字格式错误！" & vbCrLf & vbCrLf & _
+        msg = "?? 发现长数字格式错误！" & vbCrLf & vbCrLf & _
               "共 " & errorCount & " 处数据显示为科学计数法" & vbCrLf & _
               "涉及列：" & errorColumns & vbCrLf & vbCrLf & _
               "解决方法：" & vbCrLf & _
@@ -626,3 +626,5 @@ Sub CheckTaxCodeFormat(wsRaw As Worksheet)
         End If
     End If
 End Sub
+
+
