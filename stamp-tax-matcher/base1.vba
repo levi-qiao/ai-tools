@@ -317,6 +317,8 @@ Function EnsureTaxCatalogSheet(wsMapping As Worksheet, wsSummary As Worksheet) A
     wsCatalog.Range("F1").Value = "税目下拉"
     wsCatalog.Rows(1).Font.Bold = True
 
+    Call RemoveStaleAutoTaxCatalogItems(wsCatalog, wsMapping, wsSummary)
+
     lastRow = wsCatalog.Cells(wsCatalog.Rows.Count, 1).End(xlUp).Row
     hasData = (lastRow >= 2 And Len(Trim(CStr(wsCatalog.Cells(2, 1).Value))) > 0)
 
@@ -393,6 +395,63 @@ Sub CleanTaxCatalogSheet(wsCatalog As Worksheet)
 
     wsCatalog.Range("E2:F" & TAX_CATALOG_MAX_ROWS + 2).ClearContents
 End Sub
+
+Sub RemoveStaleAutoTaxCatalogItems(wsCatalog As Worksheet, wsMapping As Worksheet, wsSummary As Worksheet)
+    Dim validNames As Object
+    Dim lastRow As Long
+    Dim r As Long
+    Dim taxName As String
+    Dim remark As String
+
+    Set validNames = BuildCurrentAutoTaxNameDict(wsMapping, wsSummary)
+    lastRow = wsCatalog.Cells(wsCatalog.Rows.Count, 1).End(xlUp).Row
+
+    For r = lastRow To 2 Step -1
+        taxName = Trim(CStr(wsCatalog.Cells(r, 1).Value))
+        remark = Trim(CStr(wsCatalog.Cells(r, 4).Value))
+        If IsAutoTaxCatalogRemark(remark) Then
+            If Len(taxName) = 0 Or Not validNames.Exists(taxName) Then
+                wsCatalog.Rows(r).Delete
+            End If
+        End If
+    Next r
+End Sub
+
+Function BuildCurrentAutoTaxNameDict(wsMapping As Worksheet, wsSummary As Worksheet) As Object
+    Dim dict As Object
+    Dim r As Long
+    Dim taxName As String
+    Dim taxRate As Variant
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    If Not wsMapping Is Nothing Then
+        For r = 2 To wsMapping.Cells(wsMapping.Rows.Count, 1).End(xlUp).Row
+            taxName = Trim(CStr(wsMapping.Cells(r, 6).Value))
+            taxRate = wsMapping.Cells(r, 7).Value
+            If ShouldAddTaxCatalogItem(taxName, taxRate) Then dict(taxName) = True
+        Next r
+    End If
+
+    If Not wsSummary Is Nothing Then
+        For r = 5 To 50
+            taxName = Trim(CStr(wsSummary.Cells(r, 1).Value))
+            taxRate = wsSummary.Cells(r, 2).Value
+            If InStr(1, taxName, "合计", vbTextCompare) > 0 Or _
+               InStr(1, taxName, "人工确认", vbTextCompare) > 0 Or _
+               InStr(1, taxName, "待确认", vbTextCompare) > 0 Then
+                Exit For
+            End If
+            If ShouldAddTaxCatalogItem(taxName, taxRate) Then dict(taxName) = True
+        Next r
+    End If
+
+    Set BuildCurrentAutoTaxNameDict = dict
+End Function
+
+Function IsAutoTaxCatalogRemark(remark As String) As Boolean
+    IsAutoTaxCatalogRemark = (InStr(1, remark, "自动补充", vbTextCompare) > 0)
+End Function
 
 Sub SetTaxCatalogValidation(wsCatalog As Worksheet)
     With wsCatalog.Range("B2:B" & TAX_CATALOG_MAX_ROWS + 1).Validation
@@ -503,8 +562,8 @@ Sub RefreshTaxCatalogNames(wsCatalog As Worksheet)
     Call SetWorkbookName("ManualConfirmList", "='" & wsCatalog.Name & "'!$E$2:INDEX('" & wsCatalog.Name & "'!$E:$E,LOOKUP(2,1/('" & wsCatalog.Name & "'!$E$2:$E$" & TAX_CATALOG_MAX_ROWS + 2 & "<>""""),ROW('" & wsCatalog.Name & "'!$E$2:$E$" & TAX_CATALOG_MAX_ROWS + 2 & ")))")
     Call SetWorkbookName("TaxConfirmList", "='" & wsCatalog.Name & "'!$F$2:INDEX('" & wsCatalog.Name & "'!$F:$F,LOOKUP(2,1/('" & wsCatalog.Name & "'!$F$2:$F$" & TAX_CATALOG_MAX_ROWS + 1 & "<>""""),ROW('" & wsCatalog.Name & "'!$F$2:$F$" & TAX_CATALOG_MAX_ROWS + 1 & ")))")
     Call SetWorkbookName("RuleTaxCategoryList", "='" & wsCatalog.Name & "'!$E$2:INDEX('" & wsCatalog.Name & "'!$E:$E,LOOKUP(2,1/('" & wsCatalog.Name & "'!$E$2:$E$" & TAX_CATALOG_MAX_ROWS + 1 & "<>""""),ROW('" & wsCatalog.Name & "'!$E$2:$E$" & TAX_CATALOG_MAX_ROWS + 1 & ")))")
-    Call SetWorkbookName("TaxCatalogItems", "='" & wsCatalog.Name & "'!$A$2:$A$" & TAX_CATALOG_MAX_ROWS + 1)
-    Call SetWorkbookName("TaxCatalogRates", "='" & wsCatalog.Name & "'!$B$2:$B$" & TAX_CATALOG_MAX_ROWS + 1)
+    Call SetWorkbookName("TaxCatalogItems", "='" & wsCatalog.Name & "'!$A$2:INDEX('" & wsCatalog.Name & "'!$A:$A,LOOKUP(2,1/('" & wsCatalog.Name & "'!$A$2:$A$" & TAX_CATALOG_MAX_ROWS + 1 & "<>""""),ROW('" & wsCatalog.Name & "'!$A$2:$A$" & TAX_CATALOG_MAX_ROWS + 1 & ")))")
+    Call SetWorkbookName("TaxCatalogRates", "='" & wsCatalog.Name & "'!$B$2:INDEX('" & wsCatalog.Name & "'!$B:$B,LOOKUP(2,1/('" & wsCatalog.Name & "'!$A$2:$A$" & TAX_CATALOG_MAX_ROWS + 1 & "<>""""),ROW('" & wsCatalog.Name & "'!$A$2:$A$" & TAX_CATALOG_MAX_ROWS + 1 & ")))")
 End Sub
 
 Sub SetWorkbookName(nameText As String, refersToText As String)
@@ -656,27 +715,27 @@ Sub InstallManualConfirmationFormulas(wsInvoice As Worksheet, totalRows As Long)
 
     ' AB 匹配税目：AI选择具体税目时，人工税目优先进入上方汇总。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 28), wsInvoice.Cells(lastDataRow, 28)).FormulaR1C1 = _
-        "=IF(OR(RC[7]=""不征收"",RC[7]=""不征税"",RC[7]=""免征""),RC[13],IF(ISNUMBER(MATCH(RC[7],TaxCatalogItems,0)),RC[7],RC[13]))"
+        "=IF(OR(RC[7]=""不征收"",RC[7]=""不征税"",RC[7]=""免征""),RC[13],IF(AND(RC[7]<>"""",ISNUMBER(MATCH(RC[7],TaxCatalogItems,0))),RC[7],RC[13]))"
 
     ' AC 税率：人工选择具体税目后，从【税目维护】取税率。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 29), wsInvoice.Cells(lastDataRow, 29)).FormulaR1C1 = _
-        "=IF(ISNUMBER(MATCH(RC[6],TaxCatalogItems,0)),INDEX(TaxCatalogRates,MATCH(RC[6],TaxCatalogItems,0)),RC[13])"
+        "=IF(AND(RC[6]<>"""",ISNUMBER(MATCH(RC[6],TaxCatalogItems,0))),INDEX(TaxCatalogRates,MATCH(RC[6],TaxCatalogItems,0)),RC[13])"
 
     ' AD 应纳税额：AI填不征收则为0；AI选具体税目则按对应税率计税；只填"应税"但仍未匹配时，必须先补税目。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 30), wsInvoice.Cells(lastDataRow, 30)).FormulaR1C1 = _
-        "=IF(OR(RC[5]=""不征收"",RC[5]=""不征税"",RC[5]=""免征""),0,IF(OR(ISNUMBER(MATCH(RC[5],TaxCatalogItems,0)),AND(OR(RC[5]=""应税"",RC[5]=""征税"",RC[5]=""征收""),RC[-2]<>""未匹配"")),RC[-10]*RC[-1]/1000,RC[8]))"
+        "=IF(OR(RC[5]=""不征收"",RC[5]=""不征税"",RC[5]=""免征""),0,IF(OR(AND(RC[5]<>"""",ISNUMBER(MATCH(RC[5],TaxCatalogItems,0))),AND(OR(RC[5]=""应税"",RC[5]=""征税"",RC[5]=""征收""),RC[-2]<>""未匹配"")),RC[-10]*RC[-1]/1000,RC[8]))"
 
     ' AE 匹配结果：AI选具体税目视为应税；只填"应税"但仍未匹配时提示补税目。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 31), wsInvoice.Cells(lastDataRow, 31)).FormulaR1C1 = _
-        "=IF(OR(RC[4]=""不征收"",RC[4]=""不征税"",RC[4]=""免征""),""不征收"",IF(ISNUMBER(MATCH(RC[4],TaxCatalogItems,0)),""应税"",IF(OR(RC[4]=""应税"",RC[4]=""征税"",RC[4]=""征收""),IF(RC[-3]=""未匹配"",""待补税目"",""应税""),RC[8])))"
+        "=IF(OR(RC[4]=""不征收"",RC[4]=""不征税"",RC[4]=""免征""),""不征收"",IF(AND(RC[4]<>"""",ISNUMBER(MATCH(RC[4],TaxCatalogItems,0))),""应税"",IF(OR(RC[4]=""应税"",RC[4]=""征税"",RC[4]=""征收""),IF(RC[-3]=""未匹配"",""待补税目"",""应税""),RC[8])))"
 
     ' AG 是否排除：AI选具体税目后进入上方汇总；未匹配只填"应税"不进上方，避免无税目计税。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 33), wsInvoice.Cells(lastDataRow, 33)).FormulaR1C1 = _
-        "=IF(OR(RC[2]=""不征收"",RC[2]=""不征税"",RC[2]=""免征""),""是"",IF(ISNUMBER(MATCH(RC[2],TaxCatalogItems,0)),""否"",IF(OR(RC[2]=""应税"",RC[2]=""征税"",RC[2]=""征收""),IF(RC[-5]=""未匹配"",""是"",""否""),RC[3])))"
+        "=IF(OR(RC[2]=""不征收"",RC[2]=""不征税"",RC[2]=""免征""),""是"",IF(AND(RC[2]<>"""",ISNUMBER(MATCH(RC[2],TaxCatalogItems,0))),""否"",IF(OR(RC[2]=""应税"",RC[2]=""征税"",RC[2]=""征收""),IF(RC[-5]=""未匹配"",""是"",""否""),RC[3])))"
 
     ' AH 排除原因：人工不征收保留审计痕迹；只填"应税"时提示选择具体税目。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 34), wsInvoice.Cells(lastDataRow, 34)).FormulaR1C1 = _
-        "=IF(OR(RC[1]=""不征收"",RC[1]=""不征税"",RC[1]=""免征""),""人工确认：不征收"",IF(ISNUMBER(MATCH(RC[1],TaxCatalogItems,0)),""人工确认税目"",IF(OR(RC[1]=""应税"",RC[1]=""征税"",RC[1]=""征收""),IF(RC[-6]=""未匹配"",""请选择具体税目，不要只填应税"",""""),IF(RC[3]="""","""",RC[3]))))"
+        "=IF(OR(RC[1]=""不征收"",RC[1]=""不征税"",RC[1]=""免征""),""人工确认：不征收"",IF(AND(RC[1]<>"""",ISNUMBER(MATCH(RC[1],TaxCatalogItems,0))),""人工确认税目：""&RC[1],IF(OR(RC[1]=""应税"",RC[1]=""征税"",RC[1]=""征收""),IF(RC[-6]=""未匹配"",""请选择具体税目，不要只填应税"",""""),IF(RC[3]="""","""",RC[3]))))"
 
     Call SafeHideColumns(wsInvoice, 36, 42)
     wsInvoice.Calculate
@@ -818,19 +877,33 @@ Sub NormalizeManualConfirmValues(wsInvoice As Worksheet, totalRows As Long)
     Dim rowNum As Long
     Dim text As String
     Dim normalized As String
+    Dim matchedTax As String
+    Dim autoMatchedTax As String
 
+    wsInvoice.Calculate
     For rowNum = 3 To 2 + totalRows
         text = Trim(CStr(wsInvoice.Cells(rowNum, 35).Value))
         If Len(text) > 0 Then
+            matchedTax = Trim(CStr(wsInvoice.Cells(rowNum, 28).Value))
+            autoMatchedTax = Trim(CStr(wsInvoice.Cells(rowNum, 41).Value))
             normalized = NormalizeTaxDecisionLabel(text)
             If normalized = "不征收" Then
                 wsInvoice.Cells(rowNum, 35).Value = "不征收"
             ElseIf IsTaxCodeLikeText(text) Then
                 wsInvoice.Cells(rowNum, 35).ClearContents
+            ElseIf text = matchedTax Or text = autoMatchedTax Then
+                ' 历史版本曾把自动税目/编码污染到AI列；与自动匹配税目相同的不算人工确认。
+                wsInvoice.Cells(rowNum, 35).ClearContents
+            ElseIf Not IsAllowedManualConfirmValue(text) Then
+                wsInvoice.Cells(rowNum, 35).ClearContents
             End If
         End If
     Next rowNum
 End Sub
+
+Function IsAllowedManualConfirmValue(value As Variant) As Boolean
+    IsAllowedManualConfirmValue = IsNonTaxableText(value) Or IsTaxableText(value) Or IsKnownTaxCatalogItem(value)
+End Function
 
 Sub SetMappingRuleValidation(wsMapping As Worksheet)
     Dim lastRow As Long
