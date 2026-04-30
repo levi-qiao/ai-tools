@@ -67,7 +67,7 @@ Sub RunMatch()
     ' 2. 清空发票明细旧数据（优化：只清除使用的区域）
     Application.StatusBar = "正在清空旧数据..."
     Dim lastRowInvoice As Long
-    lastRowInvoice = wsInvoice.Cells(wsInvoice.Rows.Count, 1).End(xlUp).Row
+    lastRowInvoice = LastUsedRowBetweenColumns(wsInvoice, 3, 1, 42)
     If lastRowInvoice >= 3 Then
         ' 只清除实际使用的列（1-42列），避免清除整行
         wsInvoice.Range(wsInvoice.Cells(3, 1), wsInvoice.Cells(lastRowInvoice, 42)).Clear
@@ -83,7 +83,7 @@ Sub RunMatch()
     End If
 
     ' 4. 获取数据行数
-    lastRowRaw = wsRaw.Cells(wsRaw.Rows.Count, 1).End(xlUp).Row
+    lastRowRaw = LastRawBusinessRow(wsRaw)
     lastRowMapping = wsMapping.Cells(wsMapping.Rows.Count, 1).End(xlUp).Row
 
     If lastRowRaw < 3 Then
@@ -145,9 +145,9 @@ Sub RunMatch()
     Dim validRows As Long
     validRows = 0
 
-    ' 先计算有效行数
+    ' 先计算有效行数：不能只看A列，避免把模板空行、旧筛选空行带进结果表。
     For i = 1 To UBound(rawData, 1)
-        If Not IsEmpty(rawData(i, 1)) And Trim(CStr(rawData(i, 1))) <> "" Then
+        If IsValidRawInvoiceRow(rawData, textData, i) Then
             validRows = validRows + 1
         End If
     Next i
@@ -171,14 +171,18 @@ Sub RunMatch()
         End If
 
         ' 跳过空行
-        If IsEmpty(rawData(i, 1)) Or Trim(CStr(rawData(i, 1))) = "" Then
+        If Not IsValidRawInvoiceRow(rawData, textData, i) Then
             GoTo NextRow
         End If
 
         outputRow = outputRow + 1
 
-        ' 复制前27列基础数据
         Dim k As Long
+        For k = 1 To 42
+            outputData(outputRow, k) = ""
+        Next k
+
+        ' 复制前27列基础数据
         For k = 1 To 27
             ' 对于长数字列，使用Text属性读取的数据
             If k = 2 Then
@@ -259,7 +263,7 @@ NextRow:
 
         Call InstallManualConfirmationFormulas(wsInvoice, outputRow)
 
-        ' 使用条件格式替代逐行染色，避免大数据量时卡顿。
+        ' 逐行落色，避免条件格式在筛选和旧格式下串色。
         Call SetInvoiceConditionalFormatting(wsInvoice, outputRow)
     End If
 
@@ -387,6 +391,8 @@ Sub CleanTaxCatalogSheet(wsCatalog As Worksheet)
             End If
         End If
     Next r
+
+    wsCatalog.Range("E2:F" & TAX_CATALOG_MAX_ROWS + 2).ClearContents
 End Sub
 
 Sub SetTaxCatalogValidation(wsCatalog As Worksheet)
@@ -427,8 +433,13 @@ Function IsInvalidTaxCatalogName(taxName As String) As Boolean
     If InStr(1, taxName, "合计", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "人工确认", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "待确认", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
+    If InStr(1, taxName, "已确认", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
+    If InStr(1, taxName, "不征收", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
+    If InStr(1, taxName, "不征税", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "黄色高亮", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "处理建议", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
+    If InStr(1, taxName, "-") > 0 Then IsInvalidTaxCatalogName = True: Exit Function
+    If InStr(1, taxName, "－") > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If Left(taxName, 1) = "⚠" Or Left(taxName, 1) = "?" Then IsInvalidTaxCatalogName = True
 End Function
 
@@ -596,6 +607,8 @@ Sub InstallManualConfirmationFormulas(wsInvoice As Worksheet, totalRows As Long)
     firstDataRow = 3
     lastDataRow = 2 + totalRows
 
+    wsInvoice.Range(wsInvoice.Cells(2, 28), wsInvoice.Cells(2, 35)).Value = _
+        Array("匹配税目", "税率(‰)", "应纳税额", "匹配结果", "匹配规则", "是否排除", "排除原因", "人工确认")
     wsInvoice.Cells(2, 36).Value = "自动是否排除"
     wsInvoice.Cells(2, 37).Value = "自动排除原因"
     wsInvoice.Cells(2, 38).Value = "自动应纳税额"
@@ -626,10 +639,126 @@ Sub InstallManualConfirmationFormulas(wsInvoice As Worksheet, totalRows As Long)
 
     ' AH 排除原因：人工不征收保留审计痕迹；只填"应税"时提示选择具体税目。
     wsInvoice.Range(wsInvoice.Cells(firstDataRow, 34), wsInvoice.Cells(lastDataRow, 34)).FormulaR1C1 = _
-        "=IF(OR(RC[1]=""不征收"",RC[1]=""不征税"",RC[1]=""免征""),""人工确认：不征收"",IF(ISNUMBER(MATCH(RC[1],TaxCatalogItems,0)),""人工确认税目"",IF(OR(RC[1]=""应税"",RC[1]=""征税"",RC[1]=""征收""),IF(RC[-6]=""未匹配"",""请选择具体税目，不要只填应税"",""""),RC[3])))"
+        "=IF(OR(RC[1]=""不征收"",RC[1]=""不征税"",RC[1]=""免征""),""人工确认：不征收"",IF(ISNUMBER(MATCH(RC[1],TaxCatalogItems,0)),""人工确认税目"",IF(OR(RC[1]=""应税"",RC[1]=""征税"",RC[1]=""征收""),IF(RC[-6]=""未匹配"",""请选择具体税目，不要只填应税"",""""),IF(RC[3]="""","""",RC[3]))))"
 
-    wsInvoice.Columns("AJ:AP").Hidden = True
+    Call SafeHideColumns(wsInvoice, 36, 42)
     wsInvoice.Calculate
+End Sub
+
+Function FindInvoiceColumn(ws As Worksheet, headerText As String, fallbackCol As Long) As Long
+    Dim lastHeaderCol As Long
+    Dim col As Long
+
+    lastHeaderCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+    For col = 1 To lastHeaderCol
+        If Trim(CStr(ws.Cells(2, col).Value)) = headerText Then
+            FindInvoiceColumn = col
+            Exit Function
+        End If
+    Next col
+
+    FindInvoiceColumn = fallbackCol
+End Function
+
+Function ColumnLetter(ws As Worksheet, colIndex As Long) As String
+    Dim addressText As String
+
+    addressText = ws.Cells(1, colIndex).Address(False, False)
+    ColumnLetter = Left(addressText, Len(addressText) - 1)
+End Function
+
+Function LastUsedRowBetweenColumns(ws As Worksheet, firstDataRow As Long, firstCol As Long, lastCol As Long) As Long
+    Dim col As Long
+    Dim rowNum As Long
+    Dim maxRow As Long
+
+    maxRow = firstDataRow - 1
+    For col = firstCol To lastCol
+        rowNum = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
+        If rowNum >= firstDataRow Then
+            If Len(Trim(CStr(ws.Cells(rowNum, col).Value))) > 0 Then
+                If rowNum > maxRow Then maxRow = rowNum
+            End If
+        End If
+    Next col
+
+    LastUsedRowBetweenColumns = maxRow
+End Function
+
+Function LastRawBusinessRow(ws As Worksheet) As Long
+    Dim candidateRow As Long
+    Dim rowNum As Long
+
+    candidateRow = LastUsedRowBetweenColumns(ws, 3, 1, 27)
+    For rowNum = candidateRow To 3 Step -1
+        If IsWorksheetRawBusinessRow(ws, rowNum) Then
+            LastRawBusinessRow = rowNum
+            Exit Function
+        End If
+    Next rowNum
+
+    LastRawBusinessRow = 2
+End Function
+
+Function IsWorksheetRawBusinessRow(ws As Worksheet, rowNum As Long) As Boolean
+    Dim col As Variant
+    Dim importantCols As Variant
+
+    importantCols = Array(2, 3, 4, 5, 7, 10, 12)
+    For Each col In importantCols
+        If Len(Trim(CStr(ws.Cells(rowNum, CLng(col)).Value))) > 0 Then
+            IsWorksheetRawBusinessRow = True
+            Exit Function
+        End If
+    Next col
+
+    If IsNumeric(ws.Cells(rowNum, 20).Value) Then
+        If CDbl(ws.Cells(rowNum, 20).Value) <> 0 Then
+            IsWorksheetRawBusinessRow = True
+        End If
+    End If
+End Function
+
+Function IsValidRawInvoiceRow(rawData As Variant, textData As Variant, rowIdx As Long) As Boolean
+    Dim col As Variant
+    Dim importantCols As Variant
+
+    importantCols = Array(2, 3, 4, 5, 7, 10, 12)
+    For Each col In importantCols
+        If Len(Trim(CStr(rawData(rowIdx, CLng(col))))) > 0 Then
+            IsValidRawInvoiceRow = True
+            Exit Function
+        End If
+    Next col
+
+    If IsNumeric(rawData(rowIdx, 20)) Then
+        If CDbl(rawData(rowIdx, 20)) <> 0 Then
+            IsValidRawInvoiceRow = True
+            Exit Function
+        End If
+    End If
+
+    For col = 1 To 6
+        If Len(Trim(CStr(textData(rowIdx, CLng(col))))) > 0 Then
+            IsValidRawInvoiceRow = True
+            Exit Function
+        End If
+    Next col
+End Function
+
+Sub SafeHideColumns(ws As Worksheet, firstCol As Long, lastCol As Long)
+    On Error Resume Next
+    ws.Range(ws.Columns(firstCol), ws.Columns(lastCol)).EntireColumn.Hidden = True
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub ResetInvoiceFilterRange(ws As Worksheet, lastRow As Long, lastCol As Long)
+    On Error Resume Next
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(2, 1), ws.Cells(lastRow, lastCol)).AutoFilter
+    Err.Clear
+    On Error GoTo 0
 End Sub
 
 Sub SetManualConfirmValidation(wsInvoice As Worksheet, totalRows As Long)
@@ -706,41 +835,81 @@ Sub SetInvoiceConditionalFormatting(ws As Worksheet, totalRows As Long)
     Dim helperRange As Range
     Dim manualRange As Range
     Dim lastRow As Long
+    Dim matchTaxCol As Long
+    Dim matchResultCol As Long
+    Dim manualCol As Long
+    Dim excludeReasonCol As Long
+    Dim helperStartCol As Long
+    Dim helperEndCol As Long
+    Dim clearLastRow As Long
+    Dim rowNum As Long
+    Dim matchTax As String
+    Dim matchResult As String
+    Dim excludeReason As String
+    Dim manualConfirm As String
+    Dim manualLetter As String
 
     lastRow = 2 + totalRows
-    Set visibleRange = ws.Range(ws.Cells(3, 1), ws.Cells(lastRow, 35))  'A:AI，用户可见业务区
-    Set helperRange = ws.Range(ws.Cells(3, 36), ws.Cells(lastRow, 42))  'AJ:AP，隐藏辅助区
-    Set manualRange = ws.Range(ws.Cells(3, 35), ws.Cells(lastRow, 35))
+    matchTaxCol = FindInvoiceColumn(ws, "匹配税目", 28)
+    matchResultCol = FindInvoiceColumn(ws, "匹配结果", 31)
+    excludeReasonCol = FindInvoiceColumn(ws, "排除原因", 34)
+    manualCol = FindInvoiceColumn(ws, "人工确认", 35)
+    helperStartCol = FindInvoiceColumn(ws, "自动是否排除", 36)
+    helperEndCol = FindInvoiceColumn(ws, "自动税率", 42)
+    clearLastRow = Application.Max(lastRow, LastUsedRowBetweenColumns(ws, 3, 1, helperEndCol))
+    manualLetter = ColumnLetter(ws, manualCol)
 
-    ' 清理旧版本整行染色遗留。旧逻辑曾对整行上色，必须按整行清掉，否则右侧会残留大片粉色。
-    ws.Rows("3:" & lastRow).FormatConditions.Delete
-    ws.Rows("3:" & lastRow).Interior.Pattern = xlNone
+    Set visibleRange = ws.Range(ws.Cells(3, 1), ws.Cells(lastRow, manualCol))
+    Set helperRange = ws.Range(ws.Cells(3, helperStartCol), ws.Cells(lastRow, helperEndCol))
+    Set manualRange = ws.Range(ws.Cells(3, manualCol), ws.Cells(lastRow, manualCol))
+
+    ws.Calculate
+
+    ' 清理旧版本整行染色和条件格式遗留，避免筛选后出现颜色串行。
+    ws.Rows("3:" & clearLastRow).FormatConditions.Delete
+    ws.Rows("3:" & clearLastRow).Interior.Pattern = xlNone
     helperRange.Interior.Pattern = xlNone
-    ws.Columns("AJ:AP").Hidden = True
+    Call SafeHideColumns(ws, helperStartCol, helperEndCol)
 
-    ' 红色：未匹配且尚未人工处理，是当前最需要处理的风险项。
-    With visibleRange.FormatConditions.Add(Type:=xlExpression, Formula1:="=AND($A3<>"""",$AB3=""未匹配"",$AI3="""")")
-        .Interior.Color = RGB(255, 199, 206)
-        .StopIfTrue = True
-    End With
+    For rowNum = 3 To lastRow
+        If Application.WorksheetFunction.CountA(ws.Range(ws.Cells(rowNum, 1), ws.Cells(rowNum, manualCol))) > 0 Then
+            matchTax = Trim(CStr(ws.Cells(rowNum, matchTaxCol).Value))
+            matchResult = Trim(CStr(ws.Cells(rowNum, matchResultCol).Value))
+            excludeReason = Trim(CStr(ws.Cells(rowNum, excludeReasonCol).Value))
+            manualConfirm = Trim(CStr(ws.Cells(rowNum, manualCol).Value))
 
-    ' 黄色：系统已匹配，但税目/规则本身提示需要复核。
-    With visibleRange.FormatConditions.Add(Type:=xlExpression, Formula1:="=AND($A3<>"""",$AI3="""",OR(ISNUMBER(SEARCH(""争议"",$AB3)),ISNUMBER(SEARCH(""待确认"",$AB3)),ISNUMBER(SEARCH(""需确认"",$AB3)),$AE3=""待补税目""))")
-        .Interior.Color = RGB(255, 242, 204)
-        .StopIfTrue = True
-    End With
+            If Len(manualConfirm) > 0 Then
+                If IsNonTaxableText(manualConfirm) Or IsTaxableText(manualConfirm) Or IsKnownTaxCatalogItem(manualConfirm) Or matchResult = "应税" Or matchResult = "不征收" Then
+                    ws.Range(ws.Cells(rowNum, 1), ws.Cells(rowNum, manualCol)).Interior.Color = RGB(226, 239, 218)
+                Else
+                    ws.Cells(rowNum, manualCol).Interior.Color = RGB(244, 176, 132)
+                End If
+            ElseIf matchTax = "未匹配" And matchResult <> "不征收" And excludeReason = "无匹配规则" Then
+                ws.Range(ws.Cells(rowNum, 1), ws.Cells(rowNum, manualCol)).Interior.Color = RGB(255, 199, 206)
+            ElseIf ShouldHighlightInvoiceReview(matchTax, matchResult, excludeReason) Then
+                ws.Range(ws.Cells(rowNum, 1), ws.Cells(rowNum, manualCol)).Interior.Color = RGB(255, 242, 204)
+            End If
+        End If
+    Next rowNum
 
-    ' 绿色：已人工确认且结果有效，表示已处理完成。
-    With visibleRange.FormatConditions.Add(Type:=xlExpression, Formula1:="=AND($AI3<>"""",OR($AE3=""应税"",$AE3=""不征收""))")
+    ' 只保留一条简单条件格式：用户手工选择人工确认后，立即整行变绿，不依赖事件宏。
+    With visibleRange.FormatConditions.Add(Type:=xlExpression, Formula1:="=$" & manualLetter & "3<>""""")
         .Interior.Color = RGB(226, 239, 218)
-        .StopIfTrue = True
+        .StopIfTrue = False
     End With
 
-    ' 橙色：AI列填了非标准值，只标AI单元格，不整行染色。
-    With manualRange.FormatConditions.Add(Type:=xlExpression, Formula1:="=AND($AI3<>"""",$AE3<>""应税"",$AE3<>""不征收"")")
-        .Interior.Color = RGB(244, 176, 132)
-    End With
+    Call ResetInvoiceFilterRange(ws, lastRow, helperEndCol)
 End Sub
+
+Function ShouldHighlightInvoiceReview(matchTax As String, matchResult As String, excludeReason As String) As Boolean
+    ShouldHighlightInvoiceReview = _
+        InStr(1, matchTax, "争议", vbTextCompare) > 0 Or _
+        InStr(1, matchTax, "待确认", vbTextCompare) > 0 Or _
+        InStr(1, matchTax, "需确认", vbTextCompare) > 0 Or _
+        InStr(1, matchResult, "待确认", vbTextCompare) > 0 Or _
+        InStr(1, excludeReason, "待确认", vbTextCompare) > 0 Or _
+        matchResult = "待补税目"
+End Function
 
 '========================================
 ' 匹配函数：纯逻辑处理
@@ -842,7 +1011,7 @@ NextRule:
         result(0) = "未匹配"
         result(1) = 0
         result(2) = 0
-        result(3) = "不征收"
+        result(3) = "未匹配"
         result(4) = ""
         result(5) = "是"
         result(6) = "无匹配规则"
@@ -1023,7 +1192,7 @@ NextInvoice:
         summaryRow = summaryRow + 1
     Next key
 
-    wsSummary.Columns(10).Hidden = True
+    Call SafeHideColumns(wsSummary, 10, 10)
 End Sub
 
 '========================================
@@ -1127,8 +1296,13 @@ Sub HandleWorkbookSheetChange(ByVal Sh As Object, ByVal Target As Range)
     ElseIf Sh.Name = "发票明细" Then
         If Intersect(Target, Sh.Columns(35)) Is Nothing Then Exit Sub
         Application.EnableEvents = False
+        Application.ScreenUpdating = False
         Sh.Calculate
-        ThisWorkbook.Worksheets("季度汇总").Calculate
+        If Sh.Cells(Sh.Rows.Count, 1).End(xlUp).Row >= 3 Then
+            Call SetInvoiceConditionalFormatting(Sh, Sh.Cells(Sh.Rows.Count, 1).End(xlUp).Row - 2)
+        End If
+        Call GenerateSummaryConfirmation(Sh, ThisWorkbook.Worksheets("季度汇总"))
+        Application.Calculate
     End If
 
 CleanUp:
@@ -1174,6 +1348,18 @@ End Function
 
 Function IsTaxableText(value As Variant) As Boolean
     IsTaxableText = (NormalizeTaxDecisionLabel(value) = "应税")
+End Function
+
+Function IsKnownTaxCatalogItem(value As Variant) As Boolean
+    Dim text As String
+
+    text = Trim(CStr(value))
+    If Len(text) = 0 Then Exit Function
+
+    On Error Resume Next
+    IsKnownTaxCatalogItem = Not IsError(Application.Match(text, ThisWorkbook.Names("TaxCatalogItems").RefersToRange, 0))
+    Err.Clear
+    On Error GoTo 0
 End Function
 
 '========================================

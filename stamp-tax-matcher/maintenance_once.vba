@@ -59,7 +59,7 @@ Sub ClearInvoiceColors(Optional showMessage As Boolean = True)
 
     On Error GoTo ErrorHandler
     Set wsInvoice = ThisWorkbook.Worksheets("发票明细")
-    lastRow = wsInvoice.Cells(wsInvoice.Rows.Count, 1).End(xlUp).Row
+    lastRow = LastUsedRowBetweenColumns(wsInvoice, 3, 1, 42)
 
     If lastRow < 3 Then Exit Sub
 
@@ -68,7 +68,7 @@ Sub ClearInvoiceColors(Optional showMessage As Boolean = True)
 
     wsInvoice.Rows("3:" & lastRow).FormatConditions.Delete
     wsInvoice.Rows("3:" & lastRow).Interior.Pattern = xlNone
-    wsInvoice.Columns("AJ:AP").Hidden = True
+    Call SafeHideColumns(wsInvoice, 36, 42)
 
     Call SetInvoiceConditionalFormatting(wsInvoice, lastRow - 2)
 
@@ -191,11 +191,111 @@ ErrorHandler:
     MsgBox "检查失败：" & Err.Description, vbCritical, "错误"
 End Sub
 
+Sub RepairTaxCatalog()
+    Dim wsCatalog As Worksheet
+    Dim wsMapping As Worksheet
+    Dim wsSummary As Worksheet
+
+    On Error GoTo ErrorHandler
+
+    Set wsCatalog = ThisWorkbook.Worksheets("税目维护")
+    Set wsMapping = ThisWorkbook.Worksheets("税目映射规则")
+    Set wsSummary = ThisWorkbook.Worksheets("季度汇总")
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Call CleanTaxCatalogSheet(wsCatalog)
+    Call EnsureTaxCatalogSheet(wsMapping, wsSummary)
+    Call SetMappingRuleValidation(wsMapping)
+    Call RefreshQuarterSummary
+
+CleanUp:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "税目维护已修复：已删除非税目展示项，并重建下拉。", vbInformation, "完成"
+    Exit Sub
+
+ErrorHandler:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "修复税目维护失败：" & Err.Description, vbCritical, "错误"
+End Sub
+
 Sub ExplainColorRules()
     MsgBox "发票明细颜色说明：" & vbCrLf & vbCrLf & _
-           "红色：未匹配，且AI人工确认为空，需要处理。" & vbCrLf & _
-           "黄色：系统已匹配，但税目/规则提示争议、待确认或需确认，需要复核。" & vbCrLf & _
-           "绿色：AI列已选择不征收或具体税目，且结果有效，表示已人工处理。" & vbCrLf & _
-           "橙色：AI列填了非标准内容，只标AI单元格，请改用下拉值。" & vbCrLf & vbCrLf & _
-           "如出现右侧大片颜色，请运行 OptimizeWorkbookLayout。", vbInformation, "颜色说明"
+           "红色：匹配税目=未匹配、匹配结果不是不征收、排除原因=无匹配规则，且【人工确认】为空，需要补规则或人工确认。" & vbCrLf & _
+           "黄色：【人工确认】为空，且匹配税目/结果/原因提示争议、待确认、需确认或待补税目，需要复核。" & vbCrLf & _
+           "绿色：【人工确认】已选择不征收或具体税目，且匹配结果有效，表示已人工处理。" & vbCrLf & _
+           "橙色：【人工确认】填了非标准内容，只标该单元格，请改用下拉值。" & vbCrLf & vbCrLf & _
+           "列位置按表头识别，不再依赖肉眼判断 AI/AB 等列号。" & vbCrLf & _
+           "如出现旧颜色残留，请运行 OptimizeWorkbookLayout。", vbInformation, "颜色说明"
+End Sub
+
+Sub DiagnoseSelectedInvoiceColor()
+    Dim wsInvoice As Worksheet
+    Dim rowNum As Long
+    Dim matchTaxCol As Long
+    Dim matchResultCol As Long
+    Dim excludeReasonCol As Long
+    Dim manualCol As Long
+    Dim matchTax As String
+    Dim matchResult As String
+    Dim excludeReason As String
+    Dim manualConfirm As String
+    Dim diagnosis As String
+
+    On Error GoTo ErrorHandler
+
+    Set wsInvoice = ThisWorkbook.Worksheets("发票明细")
+    If ActiveSheet.Name <> wsInvoice.Name Then
+        MsgBox "请先在【发票明细】中选中要诊断的行。", vbExclamation, "颜色诊断"
+        Exit Sub
+    End If
+
+    rowNum = ActiveCell.Row
+    If rowNum < 3 Then
+        MsgBox "请选中第3行之后的发票数据行。", vbExclamation, "颜色诊断"
+        Exit Sub
+    End If
+
+    matchTaxCol = FindInvoiceColumn(wsInvoice, "匹配税目", 28)
+    matchResultCol = FindInvoiceColumn(wsInvoice, "匹配结果", 31)
+    excludeReasonCol = FindInvoiceColumn(wsInvoice, "排除原因", 34)
+    manualCol = FindInvoiceColumn(wsInvoice, "人工确认", 35)
+
+    matchTax = Trim(CStr(wsInvoice.Cells(rowNum, matchTaxCol).Value))
+    matchResult = Trim(CStr(wsInvoice.Cells(rowNum, matchResultCol).Value))
+    excludeReason = Trim(CStr(wsInvoice.Cells(rowNum, excludeReasonCol).Value))
+    manualConfirm = Trim(CStr(wsInvoice.Cells(rowNum, manualCol).Value))
+
+    diagnosis = "当前行：" & rowNum & vbCrLf & vbCrLf & _
+                "匹配税目（" & ColumnLetter(wsInvoice, matchTaxCol) & "列）：" & IIf(matchTax = "", "空", matchTax) & vbCrLf & _
+                "匹配结果（" & ColumnLetter(wsInvoice, matchResultCol) & "列）：" & IIf(matchResult = "", "空", matchResult) & vbCrLf & _
+                "排除原因（" & ColumnLetter(wsInvoice, excludeReasonCol) & "列）：" & IIf(excludeReason = "", "空", excludeReason) & vbCrLf & _
+                "人工确认（" & ColumnLetter(wsInvoice, manualCol) & "列）：" & IIf(manualConfirm = "", "空", manualConfirm) & vbCrLf & vbCrLf
+
+    If matchTax = "未匹配" And matchResult <> "不征收" And excludeReason = "无匹配规则" And manualConfirm = "" Then
+        diagnosis = diagnosis & "应显示红色：未匹配、无匹配规则且人工确认为空。"
+    ElseIf manualConfirm = "" And excludeReason <> "无匹配规则" And _
+           (InStr(1, matchTax, "争议", vbTextCompare) > 0 Or _
+            InStr(1, matchTax, "待确认", vbTextCompare) > 0 Or _
+            InStr(1, matchTax, "需确认", vbTextCompare) > 0 Or _
+            InStr(1, matchResult, "待确认", vbTextCompare) > 0 Or _
+            InStr(1, excludeReason, "待确认", vbTextCompare) > 0 Or _
+            matchResult = "待补税目") Then
+        diagnosis = diagnosis & "应显示黄色：需要人工复核。"
+    ElseIf manualConfirm <> "" And (IsNonTaxableText(manualConfirm) Or IsTaxableText(manualConfirm) Or IsKnownTaxCatalogItem(manualConfirm) Or matchResult = "应税" Or matchResult = "不征收") Then
+        diagnosis = diagnosis & "应显示绿色：人工确认已生效。"
+    ElseIf manualConfirm <> "" Then
+        diagnosis = diagnosis & "人工确认有值但未形成有效结果，应检查是否用了下拉标准值。"
+    Else
+        diagnosis = diagnosis & "不应高亮；如仍有底色，请运行 OptimizeWorkbookLayout 清理旧颜色。"
+    End If
+
+    MsgBox diagnosis, vbInformation, "颜色诊断"
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "颜色诊断失败：" & Err.Description, vbCritical, "颜色诊断"
 End Sub
