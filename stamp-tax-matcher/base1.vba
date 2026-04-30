@@ -56,10 +56,9 @@ Sub RunMatch()
         GoTo CleanUp
     End If
 
-    ' 日常匹配只做必要检查；完整下拉/模板维护由 SetupWorkbookOnce 或 OptimizeWorkbookLayout 执行。
-    If Not WorksheetExists("税目维护") Or Not WorkbookNameExists("ManualConfirmList") Or Not WorkbookNameExists("TaxCatalogItems") Then
-        Call EnsureTaxCatalogSheet(wsMapping, wsSummary)
-    End If
+    ' 每次匹配前都规范口径并重建下拉，避免旧的“不征税”或编码项污染人工确认列表。
+    Call NormalizeMappingNonTaxableLabels(wsMapping)
+    Call EnsureTaxCatalogSheet(wsMapping, wsSummary)
 
     ' 1.5 检查原始数据格式
     Call CheckTaxCodeFormat(wsRaw)
@@ -423,13 +422,34 @@ Function ShouldAddTaxCatalogItem(taxName As String, taxRate As Variant) As Boole
     ShouldAddTaxCatalogItem = True
 End Function
 
+Sub NormalizeMappingNonTaxableLabels(wsMapping As Worksheet)
+    Dim lastRow As Long
+    Dim r As Long
+    Dim col As Variant
+    Dim normalized As String
+
+    If wsMapping Is Nothing Then Exit Sub
+
+    lastRow = wsMapping.Cells(wsMapping.Rows.Count, 1).End(xlUp).Row
+    For r = 2 To lastRow
+        For Each col In Array(6, 8)
+            normalized = NormalizeTaxDecisionLabel(wsMapping.Cells(r, CLng(col)).Value)
+            If normalized = "不征收" Then
+                wsMapping.Cells(r, CLng(col)).Value = "不征收"
+            End If
+        Next col
+    Next r
+End Sub
+
 Function IsInvalidTaxCatalogName(taxName As String) As Boolean
     taxName = Trim(CStr(taxName))
+    If Left(taxName, 1) = "'" Then taxName = Mid(taxName, 2)
     If Len(taxName) = 0 Then Exit Function
     If taxName = "未匹配" Then IsInvalidTaxCatalogName = True: Exit Function
     If taxName = "税目" Then IsInvalidTaxCatalogName = True: Exit Function
     If taxName = "不征税项目" Then IsInvalidTaxCatalogName = True: Exit Function
     If IsNonTaxableText(taxName) Then IsInvalidTaxCatalogName = True: Exit Function
+    If IsTaxCodeLikeText(taxName) Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "合计", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "人工确认", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "待确认", vbTextCompare) > 0 Then IsInvalidTaxCatalogName = True: Exit Function
@@ -441,6 +461,23 @@ Function IsInvalidTaxCatalogName(taxName As String) As Boolean
     If InStr(1, taxName, "-") > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If InStr(1, taxName, "－") > 0 Then IsInvalidTaxCatalogName = True: Exit Function
     If Left(taxName, 1) = "⚠" Or Left(taxName, 1) = "?" Then IsInvalidTaxCatalogName = True
+End Function
+
+Function IsTaxCodeLikeText(value As Variant) As Boolean
+    Dim text As String
+    Dim i As Long
+    Dim ch As String
+
+    text = Trim(CStr(value))
+    If Left(text, 1) = "'" Then text = Mid(text, 2)
+    If Len(text) < 6 Then Exit Function
+
+    For i = 1 To Len(text)
+        ch = Mid(text, i, 1)
+        If ch < "0" Or ch > "9" Then Exit Function
+    Next i
+
+    IsTaxCodeLikeText = True
 End Function
 
 Sub RefreshTaxCatalogNames(wsCatalog As Worksheet)
@@ -764,6 +801,8 @@ End Sub
 Sub SetManualConfirmValidation(wsInvoice As Worksheet, totalRows As Long)
     If totalRows <= 0 Then Exit Sub
 
+    Call NormalizeManualConfirmValues(wsInvoice, totalRows)
+
     ' 人工确认列直接选择具体税目，未匹配发票才能进入上方对应税目汇总。
     With wsInvoice.Range(wsInvoice.Cells(3, 35), wsInvoice.Cells(2 + totalRows, 35)).Validation
         .Delete
@@ -773,6 +812,24 @@ Sub SetManualConfirmValidation(wsInvoice As Worksheet, totalRows As Long)
         .InputTitle = "人工确认"
         .InputMessage = "请选择：不征收，或【税目维护】中的具体税目"
     End With
+End Sub
+
+Sub NormalizeManualConfirmValues(wsInvoice As Worksheet, totalRows As Long)
+    Dim rowNum As Long
+    Dim text As String
+    Dim normalized As String
+
+    For rowNum = 3 To 2 + totalRows
+        text = Trim(CStr(wsInvoice.Cells(rowNum, 35).Value))
+        If Len(text) > 0 Then
+            normalized = NormalizeTaxDecisionLabel(text)
+            If normalized = "不征收" Then
+                wsInvoice.Cells(rowNum, 35).Value = "不征收"
+            ElseIf IsTaxCodeLikeText(text) Then
+                wsInvoice.Cells(rowNum, 35).ClearContents
+            End If
+        End If
+    Next rowNum
 End Sub
 
 Sub SetMappingRuleValidation(wsMapping As Worksheet)

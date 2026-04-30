@@ -20,6 +20,7 @@ Sub SetupWorkbookOnce()
     Application.ScreenUpdating = False
     Application.EnableEvents = False
 
+    Call NormalizeMappingNonTaxableLabels(wsMapping)
     Call EnsureTaxCatalogSheet(wsMapping, wsSummary)
     Call SetMappingRuleValidation(wsMapping)
     Call SetSummaryInputValidation(wsSummary)
@@ -205,6 +206,7 @@ Sub RepairTaxCatalog()
     Application.ScreenUpdating = False
     Application.EnableEvents = False
 
+    Call NormalizeMappingNonTaxableLabels(wsMapping)
     Call CleanTaxCatalogSheet(wsCatalog)
     Call EnsureTaxCatalogSheet(wsMapping, wsSummary)
     Call SetMappingRuleValidation(wsMapping)
